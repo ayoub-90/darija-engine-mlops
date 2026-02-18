@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Database, Rocket, Users, Settings as SettingsIcon,
   Bell, Sun, Moon, Lock, ShieldAlert, LogOut, Activity, X, Check, Pencil, Brain,
+  UserPlus, Ban, Clock, Globe,
 } from 'lucide-react';
 
 import Dashboard    from './pages/Dashboard';
@@ -305,6 +306,15 @@ const AppContent: React.FC = () => {
   const [showProfilePopup, setShowProfilePopup] = useState(false);
   const [userProfile, setUserProfile] = useState<any>(null);
 
+  // Notification state
+  const [showNotifs, setShowNotifs] = useState(false);
+  const [pendingRequests, setPendingRequests] = useState<any[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [acceptingId, setAcceptingId] = useState<string | null>(null);
+  const [selectedAcceptRole, setSelectedAcceptRole] = useState<string>('ANNOTATOR');
+  const notifRef = useRef<HTMLDivElement>(null);
+  const isSuperAdmin = user?.email === 'elharemayoub1@gmail.com';
+
   // Debounced sidebar hover
   const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleMouseEnter = () => {
@@ -343,6 +353,79 @@ const AppContent: React.FC = () => {
     return () => { supabase.removeChannel(ch); };
   }, [user?.id]);
 
+  // ── Notification functions ──────────────────────────────────────────────
+  const fetchPendingRequests = useCallback(async () => {
+    if (!isSuperAdmin) return;
+    const { data } = await (supabase.from as any)('join_requests').select('*').eq('status', 'pending').order('created_at', { ascending: false });
+    if (data) { setPendingRequests(data); setPendingCount(data.length); }
+  }, [isSuperAdmin]);
+
+  // Poll for pending requests
+  useEffect(() => {
+    if (!user || !isSuperAdmin) return;
+    fetchPendingRequests();
+    const interval = setInterval(fetchPendingRequests, 30000);
+    return () => clearInterval(interval);
+  }, [user, isSuperAdmin, fetchPendingRequests]);
+
+  // Close notif dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) setShowNotifs(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const handleAcceptRequest = async (requestId: string, reqEmail: string, acceptRole: string) => {
+    try {
+      // 1. Whitelist the user
+      await supabase.from('allowed_users').upsert([{ email: reqEmail.toLowerCase(), role: acceptRole }] as any, { onConflict: 'email' });
+
+      // 2. Send magic link email → user clicks → sets password
+      const siteUrl = window.location.origin;
+      const { error: otpErr } = await supabase.auth.signInWithOtp({
+        email: reqEmail,
+        options: { shouldCreateUser: true, emailRedirectTo: `${siteUrl}/set-password` },
+      });
+
+      if (otpErr) {
+        console.warn('Magic link error:', otpErr.message);
+      }
+
+      // 3. Update join request status
+      await (supabase.from as any)('join_requests').update({ status: 'accepted', decided_by: user?.id, decided_role: acceptRole, decided_at: new Date().toISOString() }).eq('id', requestId);
+
+      // 4. Log
+      await supabase.from('audit_logs' as any).insert([{
+        user_email: user?.email ?? 'admin',
+        action: 'JOIN_REQUEST_ACCEPTED',
+        resource: `${reqEmail} → ${acceptRole}`,
+      }] as any);
+
+      setAcceptingId(null);
+      fetchPendingRequests();
+    } catch (e: any) {
+      console.error('Accept error:', e);
+    }
+  };
+
+  const handleDenyRequest = async (requestId: string, reqEmail: string) => {
+    try {
+      await (supabase.from as any)('join_requests').update({ status: 'denied', decided_by: user?.id, decided_at: new Date().toISOString() }).eq('id', requestId);
+
+      await supabase.from('audit_logs' as any).insert([{
+        user_email: user?.email ?? 'admin',
+        action: 'JOIN_REQUEST_DENIED',
+        resource: reqEmail,
+      }] as any);
+
+      fetchPendingRequests();
+    } catch (e: any) {
+      console.error('Deny error:', e);
+    }
+  };
+
   // Public route
   if (location.pathname === '/accept-invitation') return <AcceptInvitation />;
   if (location.pathname === '/set-password') return <SetPassword />;
@@ -367,21 +450,39 @@ const AppContent: React.FC = () => {
       const { error: signInErr } = await signInWithPassword(email, password);
       if (!signInErr) { setLoginStatus('✓ Connecté !'); return; }
 
-      // 2. If invalid credentials → create account directly
+      // 2. If invalid credentials → submit join request
       if (signInErr.message?.includes('Invalid login credentials') || signInErr.message?.includes('invalid_credentials')) {
-        setLoginStatus('Création du compte...');
-        const { data: signUpData, error: signUpErr } = await signUpWithPassword(email, password);
-        if (signUpErr) {
-          setLoginError(`Erreur: ${signUpErr.message}`);
+        setLoginStatus('Envoi de la demande...');
+
+        // Get user's IP
+        let userIp = 'unknown';
+        try {
+          const ipRes = await fetch('https://api.ipify.org?format=json');
+          const ipData = await ipRes.json();
+          userIp = ipData.ip;
+        } catch { /* ignore */ }
+
+        // Submit join request via RPC
+        const { data: result, error: rpcErr } = await (supabase.rpc as any)('submit_join_request', {
+          req_email: email.toLowerCase().trim(),
+          req_ip: userIp,
+        });
+
+        if (rpcErr) {
+          setLoginError(`Erreur: ${rpcErr.message}`);
           setLoginStatus('');
           return;
         }
-        if (signUpData && (signUpData as any).session) {
-          setLoginStatus('✓ Compte créé !');
-          return;
+
+        if (result === 'already_exists') {
+          setLoginError('Ce compte existe déjà. Vérifiez votre mot de passe.');
+        } else if (result === 'already_pending') {
+          setLoginError('Votre demande est déjà en cours.\n\n⏳ En attente de l\'approbation de l\'administrateur.');
+        } else if (result === 'already_accepted') {
+          setLoginError('Votre demande a été acceptée.\n\nConsultez votre email pour définir votre mot de passe.');
+        } else {
+          setLoginError('✅ Demande envoyée !\n\n⏳ En attente de l\'approbation de l\'administrateur.\nVous recevrez un email quand votre demande sera acceptée.');
         }
-        // If no session → email confirmation is enabled in Supabase
-        setLoginError('Compte créé ! Vérifiez votre email ou réessayez de vous connecter.');
         setLoginStatus('');
         return;
       }
@@ -419,7 +520,7 @@ const AppContent: React.FC = () => {
                 placeholder="Min. 6 caractères" minLength={6} required />
             </div>
             <button type="submit" className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-black py-4 rounded-xl text-xs uppercase tracking-[0.15em] transition-all shadow-xl shadow-emerald-500/20 active:scale-95">
-              Se connecter / Créer un compte
+              Se connecter / Demander l'accès
             </button>
           </form>
         </div>
@@ -578,10 +679,103 @@ const AppContent: React.FC = () => {
               <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
               {onlineUsers.size} En Ligne
             </div>
-            <button className="relative p-2 text-slate-400 hover:text-emerald-500 transition-colors">
-              <Bell className="size-6" />
-              <span className="absolute top-2 right-2 size-2.5 bg-red-500 border-2 border-slate-50 dark:border-[#0a0a14] rounded-full" />
-            </button>
+            <div className="relative" ref={notifRef}>
+              <button
+                onClick={() => { setShowNotifs(!showNotifs); if (!showNotifs) fetchPendingRequests(); }}
+                className="relative p-2 text-slate-400 hover:text-emerald-500 transition-colors"
+              >
+                <Bell className="size-6" />
+                {pendingCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 min-w-[20px] h-5 px-1 bg-red-500 border-2 border-slate-50 dark:border-[#0a0a14] rounded-full flex items-center justify-center text-[10px] font-black text-white">
+                    {pendingCount}
+                  </span>
+                )}
+              </button>
+
+              {/* Notification Dropdown */}
+              {showNotifs && (
+                <div className="absolute right-0 top-12 w-96 bg-white dark:bg-[#16162a] border border-slate-200 dark:border-[#222249] rounded-2xl shadow-2xl z-[60] overflow-hidden" style={{ animation: 'popupIn 0.2s ease-out' }}>
+                  <div className="px-4 py-3 border-b border-slate-100 dark:border-[#222249] flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Bell className="size-4 text-emerald-500" />
+                      <span className="text-sm font-black text-slate-900 dark:text-white">Notifications</span>
+                    </div>
+                    <button onClick={() => setShowNotifs(false)} className="p-1 hover:bg-slate-100 dark:hover:bg-[#222249] rounded-lg transition-colors">
+                      <X className="size-4 text-slate-400" />
+                    </button>
+                  </div>
+
+                  <div className="max-h-96 overflow-y-auto">
+                    {pendingRequests.length === 0 ? (
+                      <div className="px-4 py-8 text-center">
+                        <Bell className="size-8 text-slate-300 dark:text-slate-600 mx-auto mb-2" />
+                        <p className="text-xs text-slate-400 font-bold">Aucune demande en attente</p>
+                      </div>
+                    ) : (
+                      pendingRequests.map((req: any) => (
+                        <div key={req.id} className="px-4 py-3 border-b border-slate-50 dark:border-[#1a1a35] hover:bg-slate-50 dark:hover:bg-[#1a1a35] transition-colors">
+                          <div className="flex items-start justify-between mb-2">
+                            <div>
+                              <p className="text-sm font-bold text-slate-900 dark:text-white">{req.email}</p>
+                              <div className="flex items-center gap-3 mt-1">
+                                <span className="flex items-center gap-1 text-[10px] text-slate-400">
+                                  <Globe className="size-3" /> {req.ip_address || '—'}
+                                </span>
+                                <span className="flex items-center gap-1 text-[10px] text-slate-400">
+                                  <Clock className="size-3" /> {new Date(req.created_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {acceptingId === req.id ? (
+                            <div className="flex items-center gap-2 mt-2">
+                              <select
+                                value={selectedAcceptRole}
+                                onChange={e => setSelectedAcceptRole(e.target.value)}
+                                className="flex-1 bg-slate-50 dark:bg-[#0a0a14] border border-slate-200 dark:border-[#222249] text-xs font-bold rounded-lg px-2 py-1.5 text-slate-900 dark:text-white outline-none"
+                              >
+                                <option value="VIEWER">Viewer</option>
+                                <option value="ANNOTATOR">Annotator</option>
+                                <option value="RESEARCHER">Researcher</option>
+                                <option value="ADMIN">Admin</option>
+                              </select>
+                              <button
+                                onClick={() => handleAcceptRequest(req.id, req.email, selectedAcceptRole)}
+                                className="bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] font-black uppercase px-3 py-1.5 rounded-lg transition-all flex items-center gap-1"
+                              >
+                                <Check className="size-3" /> OK
+                              </button>
+                              <button
+                                onClick={() => setAcceptingId(null)}
+                                className="text-slate-400 hover:text-slate-600 p-1"
+                              >
+                                <X className="size-3" />
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex gap-2 mt-2">
+                              <button
+                                onClick={() => { setAcceptingId(req.id); setSelectedAcceptRole('ANNOTATOR'); }}
+                                className="flex-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-black uppercase py-1.5 rounded-lg transition-all flex items-center justify-center gap-1"
+                              >
+                                <UserPlus className="size-3" /> Accepter
+                              </button>
+                              <button
+                                onClick={() => handleDenyRequest(req.id, req.email)}
+                                className="flex-1 bg-red-500/10 hover:bg-red-500/20 text-red-500 text-[10px] font-black uppercase py-1.5 rounded-lg transition-all flex items-center justify-center gap-1"
+                              >
+                                <Ban className="size-3" /> Refuser
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </header>
         <main className="flex-1 overflow-y-auto px-10 pb-10">
