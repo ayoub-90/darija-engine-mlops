@@ -113,4 +113,15 @@ UPDATE public.profiles
 SET full_name = split_part(email, '@', 1)
 WHERE full_name IS NULL AND email IS NOT NULL;
 
+-- Admin can delete any non-admin profile
+DROP POLICY IF EXISTS "Admins can delete profiles" ON public.profiles;
+CREATE POLICY "Admins can delete profiles" 
+ON public.profiles FOR DELETE 
+USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles 
+    WHERE id = auth.uid() AND role = 'ADMIN'
+  )
+);
+
 SELECT 'Done! New users will now get correct roles from allowed_users.' as result;

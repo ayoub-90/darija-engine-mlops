@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Users, UserPlus, ShieldCheck, History, Circle, Save, Loader2,
-  RefreshCw, Shield, X, Download, Filter, ChevronDown,
+  RefreshCw, Shield, X, Download, Filter, ChevronDown, Trash2, AlertTriangle,
 } from 'lucide-react';
 import { supabase, getInvitations, cancelInvitation } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -87,13 +87,16 @@ interface RolePopupProps {
   currentPage?: string;
   anchorRect: DOMRect;
   onRoleChange: (id: string, email: string, role: Role) => Promise<void>;
+  onDelete: (id: string, email: string) => Promise<void>;
   onClose: () => void;
 }
 
-const RolePopup: React.FC<RolePopupProps> = ({ member, online, currentPage, anchorRect, onRoleChange, onClose }) => {
+const RolePopup: React.FC<RolePopupProps> = ({ member, online, currentPage, anchorRect, onRoleChange, onDelete, onClose }) => {
   const popupRef = useRef<HTMLDivElement>(null);
   const [saving, setSaving] = useState(false);
   const [selectedRole, setSelectedRole] = useState<Role | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     const handle = (e: MouseEvent) => {
@@ -117,6 +120,17 @@ const RolePopup: React.FC<RolePopupProps> = ({ member, online, currentPage, anch
     setSelectedRole(role);
     await onRoleChange(member.id, (member as any).email || name, role);
     setSaving(false);
+    onClose();
+  };
+
+  const handleDelete = async () => {
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+    setDeleting(true);
+    await onDelete(member.id, (member as any).email || name);
+    setDeleting(false);
     onClose();
   };
 
@@ -200,6 +214,46 @@ const RolePopup: React.FC<RolePopupProps> = ({ member, online, currentPage, anch
                 </button>
               );
             })}
+          </div>
+        )}
+
+        {/* Delete button */}
+        {!isMemberAdmin && (
+          <div className="px-3 pb-3">
+            <div className="border-t border-slate-100 dark:border-[#2a2a52] pt-3">
+              {!confirmDelete ? (
+                <button
+                  onClick={handleDelete}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-[11px] font-bold text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-all"
+                >
+                  <Trash2 className="size-3" />
+                  Supprimer le membre
+                </button>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 text-[10px] text-amber-500 bg-amber-500/10 rounded-lg px-3 py-2 border border-amber-500/15">
+                    <AlertTriangle className="size-3 shrink-0" />
+                    <span className="font-semibold">Êtes-vous sûr ? Cette action est irréversible.</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setConfirmDelete(false)}
+                      className="flex-1 py-2 rounded-lg border border-slate-200 dark:border-[#2a2a52] text-[10px] font-bold text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
+                    >
+                      Annuler
+                    </button>
+                    <button
+                      onClick={handleDelete}
+                      disabled={deleting}
+                      className="flex-1 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white text-[10px] font-bold transition-all flex items-center justify-center gap-1.5"
+                    >
+                      {deleting ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
+                      Confirmer
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -330,6 +384,31 @@ const Team: React.FC = () => {
       await fetchLogs();
       notify(`${memberEmail} → ${newRole}`);
     } catch (e: any) { notify(e.message || 'Erreur', 'err'); }
+  };
+
+  // ── Delete user ────────────────────────────────────────────────────────────
+  const handleDeleteUser = async (memberId: string, memberEmail: string) => {
+    if (!isAdmin) return;
+    try {
+      // Delete from profiles (cascading from auth.users won't happen from client)
+      const { error: profileErr } = await supabase.from('profiles').delete().eq('id', memberId);
+      if (profileErr) throw new Error(profileErr.message);
+
+      // Clean up related data
+      await supabase.from('user_ips').delete().eq('user_id', memberId).then(() => {});
+      await supabase.from('allowed_users').delete().eq('email', memberEmail.toLowerCase()).then(() => {});
+
+      // Log the deletion
+      await supabase.from('audit_logs' as any).insert([{
+        user_email: authUser?.email ?? 'unknown',
+        action: 'USER_DELETED',
+        resource: memberEmail,
+      }] as any);
+
+      await fetchMembers();
+      await fetchLogs();
+      notify(`${memberEmail} supprimé`);
+    } catch (e: any) { notify(e.message || 'Erreur lors de la suppression', 'err'); }
   };
 
   // ── Invite ────────────────────────────────────────────────────────────────
@@ -718,6 +797,7 @@ const Team: React.FC = () => {
           currentPage={onlineUsers.get(popupMember.member.id)?.current_page}
           anchorRect={popupMember.rect}
           onRoleChange={handleRoleChange}
+          onDelete={handleDeleteUser}
           onClose={() => setPopupMember(null)}
         />
       )}
