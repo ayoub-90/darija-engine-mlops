@@ -21,14 +21,6 @@ BEGIN
     RAISE EXCEPTION 'Cannot delete your own account';
   END IF;
 
-  -- Prevent deleting other admins
-  IF EXISTS (
-    SELECT 1 FROM public.profiles 
-    WHERE id = target_user_id AND role = 'ADMIN'
-  ) THEN
-    RAISE EXCEPTION 'Cannot delete another admin';
-  END IF;
-
   -- Clean up profile data first
   DELETE FROM public.user_ips WHERE user_id = target_user_id;
   DELETE FROM public.profiles WHERE id = target_user_id;

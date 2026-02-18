@@ -218,8 +218,8 @@ const RolePopup: React.FC<RolePopupProps> = ({ member, online, currentPage, anch
           </div>
         )}
 
-        {/* Delete button */}
-        {!isMemberAdmin && canDelete && (
+        {/* Delete button — only visible to super admin */}
+        {canDelete && (
           <div className="px-3 pb-3">
             <div className="border-t border-slate-100 dark:border-[#2a2a52] pt-3">
               {!confirmDelete ? (
