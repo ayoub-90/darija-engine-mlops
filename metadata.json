@@ -1,0 +1,8 @@
+
+{
+  "name": "Darija Engine MLOps",
+  "description": "A high-performance MLOps platform specialized for Moroccan Arabic (Darija) speech recognition, featuring dataset annotation, training monitoring, and production deployment analytics.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
