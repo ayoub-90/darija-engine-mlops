@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import {
-  LayoutDashboard, Database, Cpu, Rocket, Users, Settings as SettingsIcon,
-  Bell, Sun, Moon, Lock, ShieldAlert, LogOut, Activity, X, Check, Pencil,
+  LayoutDashboard, Database, Rocket, Users, Settings as SettingsIcon,
+  Bell, Sun, Moon, Lock, ShieldAlert, LogOut, Activity, X, Check, Pencil, Brain,
 } from 'lucide-react';
 
 import Dashboard    from './pages/Dashboard';
@@ -378,11 +378,12 @@ const AppContent: React.FC = () => {
       <div className="flex items-center justify-center h-screen bg-slate-50 dark:bg-[#0a0a14] transition-colors duration-300">
         <div className="w-full max-w-md p-10 bg-white dark:bg-[#16162a] rounded-3xl shadow-2xl border border-slate-100 dark:border-[#222249]">
           <div className="text-center mb-10">
-            <div className="inline-flex items-center justify-center size-14 bg-emerald-500 rounded-2xl shadow-lg shadow-emerald-500/30 mb-6 rotate-3 hover:rotate-6 transition-transform">
-              <Cpu className="text-white size-8" />
+            <div className="inline-flex items-center justify-center size-14 rounded-2xl mb-6 rotate-3 hover:rotate-6 transition-transform relative">
+              <div className="absolute inset-0 bg-emerald-500/30 rounded-2xl blur-lg" />
+              <img src="/logo-hadik.png" alt="HADIK" className="size-14 relative z-10 drop-shadow-lg" />
             </div>
             <h1 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">Welcome Back</h1>
-            <p className="text-slate-500 mt-3 font-medium">darija-engine-mlops workspace</p>
+            <p className="text-slate-500 mt-3 font-medium">hadik-engine workspace</p>
           </div>
           {loginError && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 text-xs font-bold text-red-500 mb-4 whitespace-pre-line">{loginError}</div>
@@ -415,7 +416,7 @@ const AppContent: React.FC = () => {
   const navigation = [
     { id: View.DASHBOARD, label: 'Dashboard', icon: LayoutDashboard, adminOnly: false },
     { id: View.DATASETS, label: 'Datasets', icon: Database, adminOnly: false },
-    { id: View.TRAINING, label: 'Training', icon: Cpu, adminOnly: false },
+    { id: View.TRAINING, label: 'Training', icon: Brain, adminOnly: false },
     { id: View.DEPLOYMENTS, label: 'Déploiements', icon: Rocket, adminOnly: true },
     { id: View.TEAM, label: 'Équipe', icon: Users, adminOnly: true },
     { id: View.SETTINGS, label: 'Paramètres', icon: SettingsIcon, adminOnly: true },
@@ -455,12 +456,13 @@ const AppContent: React.FC = () => {
         {/* Logo */}
         <div className="h-24 flex items-center px-6">
           <div className="flex items-center gap-4">
-            <div className="size-10 min-w-10 bg-emerald-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
-              <Cpu className="text-white size-6" />
+            <div className="relative size-10 min-w-10">
+              <div className="absolute inset-0 bg-emerald-500/25 rounded-xl blur-md" />
+              <img src="/logo-hadik.png" alt="HADIK" className="size-10 relative z-10 drop-shadow-md" />
             </div>
             <div className={`overflow-hidden transition-[opacity,width] duration-100 ease-out ${isExpanded ? 'opacity-100 w-auto' : 'opacity-0 w-0'}`}>
-              <h1 className="font-black text-lg tracking-tight leading-none text-slate-900 dark:text-white">DARIJA</h1>
-              <p className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Engine v2.0</p>
+              <h1 className="font-black text-lg tracking-tight leading-none text-slate-900 dark:text-white">HADIK</h1>
+              <p className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Engine v1.0</p>
             </div>
           </div>
         </div>

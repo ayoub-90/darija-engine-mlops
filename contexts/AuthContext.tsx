@@ -61,24 +61,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const handleUserAuthenticated = async (userId: string, userEmail?: string) => {
     try {
+      // Small delay to let the DB trigger (handle_new_user) finish creating the profile
+      await new Promise(r => setTimeout(r, 500));
+
       // Fetch role
       let userRole = await getUserRole(userId);
 
-      // Backfill profile if missing (fix for legacy users or missed triggers)
+      // Backfill profile if it's missing (trigger may have failed or legacy user)
       if (!userRole) {
-          const { error } = await supabase.from('profiles').upsert({
-              id: userId,
-              email: userEmail,
-              role: 'ADMIN',
-              full_name: userEmail?.split('@')[0] || 'Admin',
-          });
-          if (!error) userRole = 'ADMIN';
+        // Check what role was assigned in allowed_users (if whitelisted)
+        let assignedRole = 'VIEWER'; // Safe default — NOT admin
+        try {
+          const { data: allowed } = await supabase
+            .from('allowed_users')
+            .select('role')
+            .eq('email', userEmail?.toLowerCase() ?? '')
+            .maybeSingle();
+          if (allowed && (allowed as any).role) assignedRole = (allowed as any).role;
+        } catch {
+          // If allowed_users query fails, default to VIEWER
+        }
+
+        const { error } = await supabase.from('profiles').upsert({
+          id: userId,
+          email: userEmail,
+          role: assignedRole,
+          full_name: userEmail?.split('@')[0] || 'Utilisateur',
+        } as any);
+        if (!error) userRole = assignedRole;
       }
 
       setRole(userRole);
       
-      // Record IP
-      await recordUserIp(userId);
+      // Record IP (non-blocking, don't await)
+      recordUserIp(userId).catch(() => {});
     } catch (error) {
       console.error('Error in auth flow:', error);
     } finally {
