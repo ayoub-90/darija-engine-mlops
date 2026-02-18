@@ -88,10 +88,11 @@ interface RolePopupProps {
   anchorRect: DOMRect;
   onRoleChange: (id: string, email: string, role: Role) => Promise<void>;
   onDelete: (id: string, email: string) => Promise<void>;
+  canDelete: boolean;
   onClose: () => void;
 }
 
-const RolePopup: React.FC<RolePopupProps> = ({ member, online, currentPage, anchorRect, onRoleChange, onDelete, onClose }) => {
+const RolePopup: React.FC<RolePopupProps> = ({ member, online, currentPage, anchorRect, onRoleChange, onDelete, canDelete, onClose }) => {
   const popupRef = useRef<HTMLDivElement>(null);
   const [saving, setSaving] = useState(false);
   const [selectedRole, setSelectedRole] = useState<Role | null>(null);
@@ -218,7 +219,7 @@ const RolePopup: React.FC<RolePopupProps> = ({ member, online, currentPage, anch
         )}
 
         {/* Delete button */}
-        {!isMemberAdmin && (
+        {!isMemberAdmin && canDelete && (
           <div className="px-3 pb-3">
             <div className="border-t border-slate-100 dark:border-[#2a2a52] pt-3">
               {!confirmDelete ? (
@@ -266,6 +267,7 @@ const Team: React.FC = () => {
   const { role: myRole, user: authUser } = useAuth();
   const { onlineUsers } = usePresence();
   const isAdmin = myRole === 'ADMIN';
+  const isSuperAdmin = authUser?.email === 'elharemayoub1@gmail.com';
 
   const [members, setMembers]         = useState<Profile[]>([]);
   const [invitations, setInvitations] = useState<InvitationWithStatus[]>([]);
@@ -821,6 +823,7 @@ const Team: React.FC = () => {
           anchorRect={popupMember.rect}
           onRoleChange={handleRoleChange}
           onDelete={handleDeleteUser}
+          canDelete={isSuperAdmin}
           onClose={() => setPopupMember(null)}
         />
       )}

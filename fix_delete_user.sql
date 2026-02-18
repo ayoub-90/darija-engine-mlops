@@ -8,12 +8,12 @@
 CREATE OR REPLACE FUNCTION public.delete_user_fully(target_user_id UUID)
 RETURNS VOID AS $$
 BEGIN
-  -- Only allow admins to delete users
+  -- Only allow the super admin (elharemayoub1@gmail.com) to delete users
   IF NOT EXISTS (
     SELECT 1 FROM public.profiles 
-    WHERE id = auth.uid() AND role = 'ADMIN'
+    WHERE id = auth.uid() AND email = 'elharemayoub1@gmail.com'
   ) THEN
-    RAISE EXCEPTION 'Permission denied: only admins can delete users';
+    RAISE EXCEPTION 'Permission denied: only the super admin can delete users';
   END IF;
 
   -- Prevent self-deletion
