@@ -360,14 +360,37 @@ const AppContent: React.FC = () => {
       e.preventDefault();
       setLoginStatus(''); setLoginError('');
       setLoginStatus('Connexion...');
+
+      // 1. Try to sign in (existing user)
       const { error: signInErr } = await signInWithPassword(email, password);
       if (!signInErr) { setLoginStatus('✓ Connecté !'); return; }
+
+      // 2. If invalid credentials, check whitelist before creating account
       if (signInErr.message?.includes('Invalid login credentials') || signInErr.message?.includes('invalid_credentials')) {
+        // Verify user is whitelisted
+        setLoginStatus('Vérification...');
+        const { data: allowed } = await supabase.from('allowed_users').select('email').eq('email', email.toLowerCase().trim()).maybeSingle();
+
+        if (!allowed) {
+          setLoginError('Accès refusé. Votre email n\'est pas autorisé.\n\nDemandez à un administrateur de vous inviter.');
+          setLoginStatus('');
+          return;
+        }
+
+        // Whitelisted → create account
         setLoginStatus('Création du compte...');
         const { data: signUpData, error: signUpErr } = await signUpWithPassword(email, password);
-        if (signUpErr) { setLoginError(`Erreur: ${signUpErr.message}`); setLoginStatus(''); return; }
-        if (signUpData && (signUpData as any).session) { setLoginStatus('✓ Compte créé !'); return; }
-        setLoginError('Compte créé mais confirmation email requise.\n\n→ Supabase Dashboard → Authentication → Providers → Email → Désactiver "Confirm email"');
+        if (signUpErr) {
+          setLoginError(`Erreur: ${signUpErr.message}`);
+          setLoginStatus('');
+          return;
+        }
+        if (signUpData && (signUpData as any).session) {
+          setLoginStatus('✓ Compte créé !');
+          return;
+        }
+        // If no session, it means email confirmation is required
+        setLoginError('Compte créé ! Réessayez de vous connecter avec le même mot de passe.');
         setLoginStatus('');
         return;
       }
