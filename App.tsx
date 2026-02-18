@@ -12,6 +12,7 @@ import Deployments  from './pages/Deployments';
 import Team         from './pages/Team';
 import SettingsPage from './pages/Settings';
 import AcceptInvitation from './pages/AcceptInvitation';
+import SetPassword from './pages/SetPassword';
 import { AuthProvider, useAuth }   from './contexts/AuthContext';
 import { PresenceProvider, usePresence } from './contexts/PresenceContext';
 import { supabase } from './lib/supabase';
@@ -344,6 +345,7 @@ const AppContent: React.FC = () => {
 
   // Public route
   if (location.pathname === '/accept-invitation') return <AcceptInvitation />;
+  if (location.pathname === '/set-password') return <SetPassword />;
 
   // Loading
   if (loading) {
@@ -365,19 +367,8 @@ const AppContent: React.FC = () => {
       const { error: signInErr } = await signInWithPassword(email, password);
       if (!signInErr) { setLoginStatus('✓ Connecté !'); return; }
 
-      // 2. If invalid credentials, check whitelist before creating account
+      // 2. If invalid credentials → create account directly
       if (signInErr.message?.includes('Invalid login credentials') || signInErr.message?.includes('invalid_credentials')) {
-        // Verify user is whitelisted via RPC (works for anonymous users)
-        setLoginStatus('Vérification...');
-        const { data: isAllowed } = await supabase.rpc('check_email_allowed', { check_email: email.toLowerCase().trim() });
-
-        if (!isAllowed) {
-          setLoginError('Accès refusé. Votre email n\'est pas autorisé.\n\nDemandez à un administrateur de vous inviter.');
-          setLoginStatus('');
-          return;
-        }
-
-        // Whitelisted → create account
         setLoginStatus('Création du compte...');
         const { data: signUpData, error: signUpErr } = await signUpWithPassword(email, password);
         if (signUpErr) {
@@ -389,8 +380,8 @@ const AppContent: React.FC = () => {
           setLoginStatus('✓ Compte créé !');
           return;
         }
-        // If no session, it means email confirmation is required
-        setLoginError('Compte créé ! Réessayez de vous connecter avec le même mot de passe.');
+        // If no session → email confirmation is enabled in Supabase
+        setLoginError('Compte créé ! Vérifiez votre email ou réessayez de vous connecter.');
         setLoginStatus('');
         return;
       }

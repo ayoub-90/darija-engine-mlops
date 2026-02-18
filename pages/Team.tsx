@@ -390,12 +390,17 @@ const Team: React.FC = () => {
   const handleDeleteUser = async (memberId: string, memberEmail: string) => {
     if (!isAdmin) return;
     try {
-      // Delete from profiles (cascading from auth.users won't happen from client)
-      const { error: profileErr } = await supabase.from('profiles').delete().eq('id', memberId);
-      if (profileErr) throw new Error(profileErr.message);
+      // Try full deletion via RPC (deletes from auth.users too)
+      const { error: rpcErr } = await (supabase.rpc as any)('delete_user_fully', { target_user_id: memberId });
 
-      // Clean up related data
-      await supabase.from('user_ips').delete().eq('user_id', memberId).then(() => {});
+      if (rpcErr) {
+        // Fallback: delete from profiles only if RPC not available
+        const { error: profileErr } = await supabase.from('profiles').delete().eq('id', memberId);
+        if (profileErr) throw new Error(profileErr.message);
+        await supabase.from('user_ips').delete().eq('user_id', memberId).then(() => {});
+      }
+
+      // Remove from whitelist too
       await supabase.from('allowed_users').delete().eq('email', memberEmail.toLowerCase()).then(() => {});
 
       // Log the deletion
@@ -417,27 +422,45 @@ const Team: React.FC = () => {
     setInviting(true);
     try {
       const email = inviteEmail.toLowerCase().trim();
+
+      // 1. Whitelist the email
       await supabase.from('allowed_users').upsert([{ email, role: inviteRole }] as any, { onConflict: 'email' });
+
+      // 2. Record invitation
       const { data: authData } = await supabase.auth.getUser();
       await supabase.from('invitations' as any).upsert([{
         email, role: inviteRole,
         invited_by: authData.user?.id ?? null,
         expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
       }] as any, { onConflict: 'email' }).then(() => {});
+
+      // 3. Send magic link email → user clicks → sets password
+      const siteUrl = window.location.origin;
+      const { error: otpErr } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          shouldCreateUser: true,
+          emailRedirectTo: `${siteUrl}/set-password`,
+        },
+      });
+
+      if (otpErr) {
+        // If magic link fails (rate limit, etc.), still whitelist but warn
+        console.warn('Magic link send failed:', otpErr.message);
+        notify(`${email} ajouté à la whitelist (email non envoyé: ${otpErr.message})`, 'err');
+      } else {
+        notify(`Invitation envoyée à ${email} 📧`);
+      }
+
+      // 4. Log
       await supabase.from('audit_logs' as any).insert([{
         user_email: authData.user?.email ?? email,
-        action: 'MEMBER_WHITELISTED',
-        resource: `Role: ${inviteRole}`,
+        action: 'MEMBER_INVITED',
+        resource: `${email} → ${inviteRole}`,
       }] as any);
+
       setInviteEmail('');
       await fetchLogs(); await fetchMembers();
-
-      const { data: inv } = await supabase.from('invitations').select('token').eq('email', email).single();
-      if ((inv as any)?.token) {
-        const link = `${window.location.origin}/accept-invitation?token=${(inv as any).token}`;
-        setLastInviteLink(link);
-      }
-      notify(`Invitation envoyée à ${email}`);
     } catch (e: any) {
       notify(e.message?.includes('row-level security') ? 'Permission refusée' : (e.message || 'Erreur'), 'err');
     }
