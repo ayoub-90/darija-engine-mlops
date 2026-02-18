@@ -367,11 +367,11 @@ const AppContent: React.FC = () => {
 
       // 2. If invalid credentials, check whitelist before creating account
       if (signInErr.message?.includes('Invalid login credentials') || signInErr.message?.includes('invalid_credentials')) {
-        // Verify user is whitelisted
+        // Verify user is whitelisted via RPC (works for anonymous users)
         setLoginStatus('Vérification...');
-        const { data: allowed } = await supabase.from('allowed_users').select('email').eq('email', email.toLowerCase().trim()).maybeSingle();
+        const { data: isAllowed } = await supabase.rpc('check_email_allowed', { check_email: email.toLowerCase().trim() });
 
-        if (!allowed) {
+        if (!isAllowed) {
           setLoginError('Accès refusé. Votre email n\'est pas autorisé.\n\nDemandez à un administrateur de vous inviter.');
           setLoginStatus('');
           return;

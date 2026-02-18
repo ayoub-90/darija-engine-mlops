@@ -124,4 +124,19 @@ USING (
   )
 );
 
+-- 8. RPC function for anonymous whitelist check (used on login page)
+CREATE OR REPLACE FUNCTION public.check_email_allowed(check_email TEXT)
+RETURNS BOOLEAN AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM public.allowed_users 
+    WHERE lower(email) = lower(check_email)
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Allow anonymous and authenticated users to call it
+GRANT EXECUTE ON FUNCTION public.check_email_allowed(TEXT) TO anon;
+GRANT EXECUTE ON FUNCTION public.check_email_allowed(TEXT) TO authenticated;
+
 SELECT 'Done! New users will now get correct roles from allowed_users.' as result;
