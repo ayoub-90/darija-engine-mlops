@@ -546,12 +546,29 @@ const AppContent: React.FC = () => {
           return;
         }
 
-        if (result === 'already_exists') {
-          setLoginError('Ce compte existe déjà. Vérifiez votre mot de passe.');
+        if (result === 'already_exists' || result === 'already_accepted') {
+          // User exists or was accepted — try to sign up with the password they typed
+          setLoginStatus('Configuration du compte...');
+          const { error: signUpErr2 } = await signUpWithPassword(sanitizedEmail, password);
+
+          if (!signUpErr2) {
+            setLoginStatus('✓ Compte configuré !');
+            return;
+          }
+
+          // If signUp also fails (user already in auth.users), try password reset
+          const { error: resetErr } = await supabase.auth.resetPasswordForEmail(
+            sanitizedEmail,
+            { redirectTo: `${window.location.origin}/set-password` }
+          );
+
+          if (!resetErr) {
+            setLoginError('📧 Votre compte est approuvé !\n\nUn lien de réinitialisation vous a été envoyé par email.\nCliquez dessus pour définir votre mot de passe.');
+          } else {
+            setLoginError('Votre compte est approuvé mais le mot de passe n\'est pas encore défini.\n\n⚠️ Contactez l\'administrateur pour réinitialiser votre accès.');
+          }
         } else if (result === 'already_pending') {
           setLoginError('Votre demande est déjà en cours.\n\n⏳ En attente de l\'approbation de l\'administrateur.');
-        } else if (result === 'already_accepted') {
-          setLoginError('Votre demande a été acceptée.\n\nConsultez votre email pour définir votre mot de passe.');
         } else {
           setLoginError('✅ Demande envoyée !\n\n⏳ En attente de l\'approbation de l\'administrateur.\nVous recevrez un email quand votre demande sera acceptée.');
         }
