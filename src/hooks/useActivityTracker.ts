@@ -1,54 +1,40 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 
 /**
- * Tracks PAGE_VIEW and CLICK events to audit_logs.
- * Presence is handled by PresenceContext — this hook only does audit logging.
+ * Tracks PAGE_VIEW events to audit_logs (debounced).
+ * Click tracking removed — it was causing ~50-100 DB writes/min per user.
  */
 export function useActivityTracker() {
     const location = useLocation();
+    const userRef = useRef<{ email: string } | null>(null);
+    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // Log page views
+    // Cache user once
     useEffect(() => {
-        const page = location.pathname.replace(/^\//, '').split('/')[0] || 'dashboard';
-
         supabase.auth.getUser().then(({ data: { user } }) => {
-            if (!user) return;
-            supabase.from('audit_logs').insert([{
-                user_email: user.email ?? 'unknown',
+            if (user) userRef.current = { email: user.email ?? 'unknown' };
+        });
+    }, []);
+
+    // Debounced page view logging (2s delay to avoid rapid navigation spam)
+    useEffect(() => {
+        if (timerRef.current) clearTimeout(timerRef.current);
+
+        timerRef.current = setTimeout(() => {
+            const u = userRef.current;
+            if (!u) return;
+            const page = location.pathname.replace(/^\//, '').split('/')[0] || 'dashboard';
+            Promise.resolve(supabase.from('audit_logs' as any).insert([{
+                user_email: u.email,
                 action: 'PAGE_VIEW',
                 resource: page,
-            }]).then(() => { }).catch(() => { });
-        });
-    }, [location.pathname]);
+            }] as any)).catch(() => { });
+        }, 2000);
 
-    // Log clicks on interactive elements
-    useEffect(() => {
-        const handleClick = (e: MouseEvent) => {
-            const target = e.target as HTMLElement;
-            const btn = target.closest('button, a, [role="button"]');
-            if (!btn) return;
-
-            const label =
-                btn.getAttribute('aria-label') ||
-                (btn as HTMLElement).innerText?.slice(0, 50) ||
-                btn.tagName;
-
-            // Skip noisy labels
-            if (!label || label.length < 2) return;
-
-            supabase.auth.getUser().then(({ data: { user } }) => {
-                if (!user) return;
-                supabase.from('audit_logs').insert([{
-                    user_email: user.email ?? 'unknown',
-                    action: 'CLICK',
-                    resource: label,
-                }]).then(() => { }).catch(() => { });
-            });
+        return () => {
+            if (timerRef.current) clearTimeout(timerRef.current);
         };
-
-        window.addEventListener('click', handleClick);
-        return () => window.removeEventListener('click', handleClick);
-    }, []);
+    }, [location.pathname]);
 }

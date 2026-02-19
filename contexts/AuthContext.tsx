@@ -61,16 +61,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const handleUserAuthenticated = async (userId: string, userEmail?: string) => {
     try {
-      // Small delay to let the DB trigger (handle_new_user) finish creating the profile
-      await new Promise(r => setTimeout(r, 500));
-
-      // Fetch role
-      let userRole = await getUserRole(userId);
+      // Fast retry: fetch role immediately, retry up to 3 times if trigger hasn't finished
+      let userRole: string | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        userRole = await getUserRole(userId);
+        if (userRole) break;
+        if (attempt < 2) await new Promise(r => setTimeout(r, 100)); // 100ms between retries
+      }
 
       // Backfill profile if it's missing (trigger may have failed or legacy user)
       if (!userRole) {
-        // Check what role was assigned in allowed_users (if whitelisted)
-        let assignedRole = 'VIEWER'; // Safe default — NOT admin
+        let assignedRole = 'VIEWER';
         try {
           const { data: allowed } = await supabase
             .from('allowed_users')

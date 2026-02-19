@@ -94,7 +94,7 @@ export const PresenceProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
   }, [user?.id]);
 
-  // Update presence when page changes
+  // Update presence when page changes (Realtime only, no DB write)
   useEffect(() => {
     const ch = channelRef.current;
     if (!ch || !user) return;
@@ -106,16 +106,9 @@ export const PresenceProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       current_page: page,
       online_at: new Date().toISOString(),
     }).catch(() => {});
-
-    // Heartbeat last_seen_at
-    supabase
-      .from('profiles')
-      .update({ last_seen_at: new Date().toISOString() } as any)
-      .eq('id', user.id)
-      .then(() => {});
   }, [location.pathname, user?.id]);
 
-  // Periodic heartbeat every 30s
+  // Periodic heartbeat every 60s (was 30s)
   useEffect(() => {
     if (!user) return;
     const iv = setInterval(() => {
@@ -128,7 +121,13 @@ export const PresenceProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         current_page: page,
         online_at: new Date().toISOString(),
       }).catch(() => {});
-    }, 30_000);
+      // Update last_seen_at in DB only on heartbeat (not on every page change)
+      Promise.resolve(supabase
+        .from('profiles')
+        .update({ last_seen_at: new Date().toISOString() } as any)
+        .eq('id', user.id)
+      ).catch(() => {});
+    }, 60_000);
     return () => clearInterval(iv);
   }, [user?.id]);
 

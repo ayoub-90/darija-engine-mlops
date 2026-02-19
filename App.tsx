@@ -1,22 +1,30 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Database, Rocket, Users, Settings as SettingsIcon,
   Bell, Sun, Moon, Lock, ShieldAlert, LogOut, Activity, X, Check, Pencil, Brain,
-  UserPlus, Ban, Clock, Globe,
+  UserPlus, Ban, Clock, Globe, Menu,
 } from 'lucide-react';
 
-import Dashboard    from './pages/Dashboard';
-import Datasets     from './pages/Datasets';
-import Training     from './pages/Training';
-import Deployments  from './pages/Deployments';
-import Team         from './pages/Team';
-import SettingsPage from './pages/Settings';
+// Lazy load pages for faster initial load
+const Dashboard    = React.lazy(() => import('./pages/Dashboard'));
+const Datasets     = React.lazy(() => import('./pages/Datasets'));
+const Training     = React.lazy(() => import('./pages/Training'));
+const Deployments  = React.lazy(() => import('./pages/Deployments'));
+const Team         = React.lazy(() => import('./pages/Team'));
+const SettingsPage = React.lazy(() => import('./pages/Settings'));
 import AcceptInvitation from './pages/AcceptInvitation';
 import SetPassword from './pages/SetPassword';
 import { AuthProvider, useAuth }   from './contexts/AuthContext';
 import { PresenceProvider, usePresence } from './contexts/PresenceContext';
 import { supabase } from './lib/supabase';
+
+// Loading spinner for lazy-loaded pages
+const PageLoader = () => (
+  <div className="flex items-center justify-center h-64">
+    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500" />
+  </div>
+);
 
 // ─── View enum ────────────────────────────────────────────────────────────────
 enum View {
@@ -28,7 +36,8 @@ enum View {
   SETTINGS    = 'settings',
 }
 
-const ADMIN_ONLY_VIEWS = new Set([View.SETTINGS, View.TEAM, View.DEPLOYMENTS]);
+const ADMIN_ONLY_VIEWS = new Set([View.SETTINGS, View.TEAM]);
+const ADMIN_OR_RESEARCHER_VIEWS = new Set([View.DEPLOYMENTS]);
 
 const VIEW_LABELS: Record<string, string> = {
   dashboard: '📊 Dashboard',
@@ -298,6 +307,7 @@ const AppContent: React.FC = () => {
   const { onlineUsers, myPresence } = usePresence();
   const [activeView, setActiveView] = useState<View>(View.DASHBOARD);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -305,6 +315,11 @@ const AppContent: React.FC = () => {
   const [loginError, setLoginError] = useState('');
   const [showProfilePopup, setShowProfilePopup] = useState(false);
   const [userProfile, setUserProfile] = useState<any>(null);
+
+  // Login rate limiting
+  const loginAttemptsRef = useRef<number[]>([]);
+  const [loginLocked, setLoginLocked] = useState(false);
+  const [lockCountdown, setLockCountdown] = useState(0);
 
   // Notification state
   const [showNotifs, setShowNotifs] = useState(false);
@@ -379,24 +394,13 @@ const AppContent: React.FC = () => {
 
   const handleAcceptRequest = async (requestId: string, reqEmail: string, acceptRole: string) => {
     try {
-      // 1. Whitelist the user
+      // 1. Whitelist the user (they'll create their account with a password from the login page)
       await supabase.from('allowed_users').upsert([{ email: reqEmail.toLowerCase(), role: acceptRole }] as any, { onConflict: 'email' });
 
-      // 2. Send magic link email → user clicks → sets password
-      const siteUrl = window.location.origin;
-      const { error: otpErr } = await supabase.auth.signInWithOtp({
-        email: reqEmail,
-        options: { shouldCreateUser: true, emailRedirectTo: `${siteUrl}/set-password` },
-      });
-
-      if (otpErr) {
-        console.warn('Magic link error:', otpErr.message);
-      }
-
-      // 3. Update join request status
+      // 2. Update join request status
       await (supabase.from as any)('join_requests').update({ status: 'accepted', decided_by: user?.id, decided_role: acceptRole, decided_at: new Date().toISOString() }).eq('id', requestId);
 
-      // 4. Log
+      // 3. Log
       await supabase.from('audit_logs' as any).insert([{
         user_email: user?.email ?? 'admin',
         action: 'JOIN_REQUEST_ACCEPTED',
@@ -444,14 +448,82 @@ const AppContent: React.FC = () => {
     const handleLogin = async (e: React.FormEvent) => {
       e.preventDefault();
       setLoginStatus(''); setLoginError('');
+
+      // Rate limiting: block after 5 failed attempts in 60s
+      const now = Date.now();
+      const recentAttempts = loginAttemptsRef.current.filter(t => now - t < 60000);
+      if (recentAttempts.length >= 5) {
+        const unlockAt = recentAttempts[0] + 60000;
+        const secs = Math.ceil((unlockAt - now) / 1000);
+        setLoginLocked(true);
+        setLockCountdown(secs);
+        setLoginError(`⏳ Trop de tentatives. Réessayez dans ${secs}s.`);
+        const iv = setInterval(() => {
+          const remaining = Math.ceil((unlockAt - Date.now()) / 1000);
+          if (remaining <= 0) { setLoginLocked(false); setLockCountdown(0); clearInterval(iv); }
+          else { setLockCountdown(remaining); setLoginError(`⏳ Trop de tentatives. Réessayez dans ${remaining}s.`); }
+        }, 1000);
+        return;
+      }
+      loginAttemptsRef.current = recentAttempts;
+
+      // Sanitize email
+      const sanitizedEmail = email.toLowerCase().trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sanitizedEmail)) {
+        setLoginError('Format d\'email invalide.');
+        return;
+      }
+
       setLoginStatus('Connexion...');
 
       // 1. Try to sign in (existing user)
-      const { error: signInErr } = await signInWithPassword(email, password);
-      if (!signInErr) { setLoginStatus('✓ Connecté !'); return; }
+      const { error: signInErr } = await signInWithPassword(sanitizedEmail, password);
+      if (!signInErr) { setLoginStatus('✓ Connecté !'); loginAttemptsRef.current = []; return; }
 
-      // 2. If invalid credentials → submit join request
+      // Track failed attempt
+      loginAttemptsRef.current.push(Date.now());
+
+      // 2. If invalid credentials → check if already accepted, otherwise submit join request
       if (signInErr.message?.includes('Invalid login credentials') || signInErr.message?.includes('invalid_credentials')) {
+        setLoginStatus('Vérification...');
+
+        // First check if the user is already whitelisted (accepted but hasn't set password)
+        const { data: isAllowed } = await (supabase.rpc as any)('check_email_allowed', {
+          check_email: email.toLowerCase().trim(),
+        });
+
+        if (isAllowed) {
+          // User is whitelisted — try to create their account with the password they typed
+          setLoginStatus('Création du compte...');
+          const { error: signUpErr } = await signUpWithPassword(email.toLowerCase().trim(), password);
+
+          if (!signUpErr) {
+            // Success! User is now signed up with their password
+            setLoginStatus('✓ Compte créé ! Connexion...');
+            return;
+          }
+
+          // If user already exists in auth (from earlier magic link), try password reset
+          if (signUpErr.message?.includes('already registered') || signUpErr.message?.includes('already_exists')) {
+            // User exists in auth.users but without a password set — need email-based reset
+            const { error: resetErr } = await supabase.auth.resetPasswordForEmail(
+              email.toLowerCase().trim(),
+              { redirectTo: `${window.location.origin}/set-password` }
+            );
+
+            if (resetErr) {
+              setLoginError(`Votre compte est approuvé mais le mot de passe n'est pas encore défini.\n\n⚠️ Impossible d'envoyer le lien de réinitialisation.\n\nContactez l'administrateur pour réinitialiser votre accès.`);
+            } else {
+              setLoginError('📧 Votre compte est approuvé !\n\nUn lien de réinitialisation du mot de passe vous a été envoyé par email.\nCliquez dessus pour définir votre mot de passe.');
+            }
+          } else {
+            setLoginError(`Erreur lors de la création: ${signUpErr.message}`);
+          }
+          setLoginStatus('');
+          return;
+        }
+
+        // Not whitelisted → submit join request
         setLoginStatus('Envoi de la demande...');
 
         // Get user's IP
@@ -519,8 +591,11 @@ const AppContent: React.FC = () => {
                 className="w-full bg-slate-50 dark:bg-[#0a0a14] border border-slate-200 dark:border-[#222249] rounded-xl px-5 py-4 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-bold"
                 placeholder="Min. 6 caractères" minLength={6} required />
             </div>
-            <button type="submit" className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-black py-4 rounded-xl text-xs uppercase tracking-[0.15em] transition-all shadow-xl shadow-emerald-500/20 active:scale-95">
-              Se connecter / Demander l'accès
+            <button type="submit" disabled={loginLocked}
+              className={`w-full font-black py-4 rounded-xl text-xs uppercase tracking-[0.15em] transition-all shadow-xl active:scale-95 ${
+                loginLocked ? 'bg-slate-400 cursor-not-allowed shadow-none' : 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-emerald-500/20'
+              }`}>
+              {loginLocked ? `Verrouillé (${lockCountdown}s)` : 'Se connecter / Demander l\'accès'}
             </button>
           </form>
         </div>
@@ -532,28 +607,31 @@ const AppContent: React.FC = () => {
     { id: View.DASHBOARD, label: 'Dashboard', icon: LayoutDashboard, adminOnly: false },
     { id: View.DATASETS, label: 'Datasets', icon: Database, adminOnly: false },
     { id: View.TRAINING, label: 'Training', icon: Brain, adminOnly: false },
-    { id: View.DEPLOYMENTS, label: 'Déploiements', icon: Rocket, adminOnly: true },
+    { id: View.DEPLOYMENTS, label: 'Déploiements', icon: Rocket, adminOnly: false, requireRole: ['ADMIN', 'RESEARCHER'] },
     { id: View.TEAM, label: 'Équipe', icon: Users, adminOnly: true },
     { id: View.SETTINGS, label: 'Paramètres', icon: SettingsIcon, adminOnly: true },
   ];
 
   const handleNavClick = (item: typeof navigation[0]) => {
     if (item.adminOnly && !isAdmin) return;
+    if ((item as any).requireRole && !(item as any).requireRole.includes(role)) return;
     setActiveView(item.id);
     setShowProfilePopup(false);
   };
 
   const renderContent = () => {
     if (ADMIN_ONLY_VIEWS.has(activeView) && !isAdmin) return <AccessDenied />;
-    switch (activeView) {
-      case View.DASHBOARD: return <Dashboard />;
-      case View.DATASETS: return <Datasets />;
-      case View.TRAINING: return <Training />;
-      case View.DEPLOYMENTS: return <Deployments />;
-      case View.TEAM: return <Team />;
-      case View.SETTINGS: return <SettingsPage />;
-      default: return <Dashboard />;
-    }
+    if (ADMIN_OR_RESEARCHER_VIEWS.has(activeView) && role !== 'ADMIN' && role !== 'RESEARCHER') return <AccessDenied />;
+    return (
+      <Suspense fallback={<PageLoader />}>
+        {activeView === View.DASHBOARD && <Dashboard />}
+        {activeView === View.DATASETS && <Datasets />}
+        {activeView === View.TRAINING && <Training />}
+        {activeView === View.DEPLOYMENTS && <Deployments />}
+        {activeView === View.TEAM && <Team />}
+        {activeView === View.SETTINGS && <SettingsPage />}
+      </Suspense>
+    );
   };
 
   // Resolve avatar
@@ -562,9 +640,18 @@ const AppContent: React.FC = () => {
 
   return (
     <div className="flex h-screen bg-slate-50 dark:bg-[#0a0a14] text-slate-900 dark:text-slate-100 transition-colors duration-300 font-sans">
+      {/* Mobile overlay */}
+      {mobileMenuOpen && (
+        <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={() => setMobileMenuOpen(false)} />
+      )}
+
       {/* SIDEBAR */}
       <aside
-        className={`flex flex-col bg-white dark:bg-[#16162a] border-r border-slate-200 dark:border-[#222249] z-50 will-change-[width] transition-[width] duration-150 ease-out ${isExpanded ? 'w-72' : 'w-[88px]'}`}
+        className={`flex flex-col bg-white dark:bg-[#16162a] border-r border-slate-200 dark:border-[#222249] z-50 will-change-[width] transition-all duration-150 ease-out
+          fixed lg:relative h-full
+          ${mobileMenuOpen ? 'translate-x-0 w-72' : '-translate-x-full lg:translate-x-0'}
+          ${!mobileMenuOpen && (isExpanded ? 'lg:w-72' : 'lg:w-[88px]')}
+        `}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
       >
@@ -585,32 +672,32 @@ const AppContent: React.FC = () => {
         {/* Nav */}
         <nav className="flex-1 px-4 space-y-1 py-6">
           {navigation.map((item) => {
-            const locked = item.adminOnly && !isAdmin;
+            const locked = item.adminOnly ? !isAdmin : (item as any).requireRole ? !(item as any).requireRole.includes(role) : false;
             return (
-              <button key={item.id} onClick={() => handleNavClick(item)}
+              <button key={item.id} onClick={() => { handleNavClick(item); setMobileMenuOpen(false); }}
                 title={locked ? 'Réservé aux admins' : item.label}
                 className={`group flex items-center h-12 rounded-xl transition-colors duration-100 relative overflow-hidden outline-none w-full ${
                   locked ? 'text-slate-300 dark:text-slate-700 cursor-not-allowed'
                     : activeView === item.id ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                     : 'text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-white'
-                } ${isExpanded ? 'px-4 gap-4' : 'justify-center'}`}
+                } ${(isExpanded || mobileMenuOpen) ? 'px-4 gap-4' : 'justify-center'}`}
               >
                 {activeView === item.id && !locked && <div className="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-1 rounded-r-full bg-emerald-500" />}
                 <div className="relative">
                   <item.icon className={`size-5 transition-transform duration-100 ${!locked ? 'group-hover:scale-110' : ''}`} />
                   {locked && <Lock className="absolute -top-1 -right-1 size-2.5 text-slate-400 dark:text-slate-600" />}
                 </div>
-                <span className={`font-bold text-sm whitespace-nowrap transition-[opacity,width] duration-100 ease-out ${isExpanded ? 'opacity-100 w-auto' : 'opacity-0 w-0 pointer-events-none'}`}>
+                <span className={`font-bold text-sm whitespace-nowrap transition-[opacity,width] duration-100 ease-out ${(isExpanded || mobileMenuOpen) ? 'opacity-100 w-auto' : 'opacity-0 w-0 pointer-events-none'}`}>
                   {item.label}
                 </span>
-                {locked && isExpanded && <Lock className="size-3 ml-auto text-slate-300 dark:text-slate-700" />}
+                {locked && (isExpanded || mobileMenuOpen) && <Lock className="size-3 ml-auto text-slate-300 dark:text-slate-700" />}
               </button>
             );
           })}
         </nav>
 
         {/* Online users count */}
-        {isExpanded && onlineUsers.size > 0 && (
+        {(isExpanded || mobileMenuOpen) && onlineUsers.size > 0 && (
           <div className="mx-4 mb-2 px-3 py-2 rounded-lg bg-emerald-500/5 border border-emerald-500/10 text-center">
             <p className="text-[9px] font-black text-emerald-500 uppercase tracking-widest">
               <span className="inline-block size-1.5 rounded-full bg-emerald-500 animate-pulse mr-1.5" />
@@ -622,14 +709,14 @@ const AppContent: React.FC = () => {
         {/* Bottom section */}
         <div className="p-4 border-t border-slate-100 dark:border-[#222249] space-y-2 relative">
           <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-            className={`flex items-center h-12 rounded-xl text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-white/5 transition-colors duration-100 outline-none w-full ${isExpanded ? 'px-4 gap-4' : 'justify-center'}`}>
+            className={`flex items-center h-12 rounded-xl text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-white/5 transition-colors duration-100 outline-none w-full ${(isExpanded || mobileMenuOpen) ? 'px-4 gap-4' : 'justify-center'}`}>
             {theme === 'dark' ? <Sun className="size-5" /> : <Moon className="size-5" />}
-            {isExpanded && <span className="font-bold text-sm">Thème</span>}
+            {(isExpanded || mobileMenuOpen) && <span className="font-bold text-sm">Thème</span>}
           </button>
 
           {/* Avatar button */}
           <button onClick={() => setShowProfilePopup(!showProfilePopup)}
-            className={`flex items-center gap-3 bg-slate-50 dark:bg-[#0a0a14]/50 rounded-xl border border-slate-100 dark:border-[#222249] transition-all duration-100 w-full hover:border-primary/50 ${isExpanded ? 'p-3' : 'p-2 justify-center'}`}>
+            className={`flex items-center gap-3 bg-slate-50 dark:bg-[#0a0a14]/50 rounded-xl border border-slate-100 dark:border-[#222249] transition-all duration-100 w-full hover:border-primary/50 ${(isExpanded || mobileMenuOpen) ? 'p-3' : 'p-2 justify-center'}`}>
             <div className="relative">
               {avatarData ? (
                 <div className={`size-8 min-w-8 rounded-full flex items-center justify-center text-sm bg-gradient-to-br ${avatarData.bg} border border-white/20`}>
@@ -642,7 +729,7 @@ const AppContent: React.FC = () => {
               )}
               <span className="absolute -bottom-0.5 -right-0.5 size-2.5 bg-emerald-500 border-2 border-white dark:border-[#16162a] rounded-full" />
             </div>
-            {isExpanded && (
+            {(isExpanded || mobileMenuOpen) && (
               <div className="flex-1 overflow-hidden text-left">
                 <p className="text-xs font-black text-slate-900 dark:text-white truncate">{displayName}</p>
                 <p className="text-[9px] font-bold text-primary uppercase tracking-wider mt-0.5">{role || 'VIEWER'}</p>
@@ -664,18 +751,24 @@ const AppContent: React.FC = () => {
 
       {/* MAIN */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
-        <header className="h-24 flex items-center justify-between px-10 shrink-0 z-30">
-          <div>
-            <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight uppercase">{activeView}</h2>
-            <p className="text-slate-400 dark:text-slate-500 text-xs font-bold uppercase tracking-widest mt-1">Platform Overview</p>
+        <header className="h-16 lg:h-24 flex items-center justify-between px-4 sm:px-6 lg:px-10 shrink-0 z-30">
+          <div className="flex items-center gap-3">
+            {/* Mobile hamburger */}
+            <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="lg:hidden p-2 text-slate-400 hover:text-emerald-500 transition-colors rounded-lg hover:bg-slate-100 dark:hover:bg-white/5">
+              <Menu className="size-6" />
+            </button>
+            <div>
+              <h2 className="text-lg sm:text-xl lg:text-2xl font-black text-slate-900 dark:text-white tracking-tight uppercase">{activeView}</h2>
+              <p className="text-slate-400 dark:text-slate-500 text-[10px] lg:text-xs font-bold uppercase tracking-widest mt-0.5 lg:mt-1 hidden sm:block">Platform Overview</p>
+            </div>
           </div>
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-2 sm:gap-4 lg:gap-6">
             {isAdmin && (
-              <div className="hidden md:flex items-center gap-2 px-4 py-2 rounded-full bg-red-500/10 border border-red-500/20 text-red-500 text-[10px] font-black uppercase tracking-widest">
+              <div className="hidden lg:flex items-center gap-2 px-4 py-2 rounded-full bg-red-500/10 border border-red-500/20 text-red-500 text-[10px] font-black uppercase tracking-widest">
                 <ShieldAlert className="size-3" /> Admin
               </div>
             )}
-            <div className="hidden md:flex items-center gap-2 px-4 py-2 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-black uppercase tracking-widest shadow-lg shadow-emerald-500/5">
+            <div className="hidden lg:flex items-center gap-2 px-4 py-2 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-black uppercase tracking-widest shadow-lg shadow-emerald-500/5">
               <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
               {onlineUsers.size} En Ligne
             </div>
@@ -694,7 +787,7 @@ const AppContent: React.FC = () => {
 
               {/* Notification Dropdown */}
               {showNotifs && (
-                <div className="absolute right-0 top-12 w-96 bg-white dark:bg-[#16162a] border border-slate-200 dark:border-[#222249] rounded-2xl shadow-2xl z-[60] overflow-hidden" style={{ animation: 'popupIn 0.2s ease-out' }}>
+                <div className="absolute right-0 sm:right-0 top-12 w-[calc(100vw-2rem)] sm:w-96 max-w-96 bg-white dark:bg-[#16162a] border border-slate-200 dark:border-[#222249] rounded-2xl shadow-2xl z-[60] overflow-hidden" style={{ animation: 'popupIn 0.2s ease-out' }}>
                   <div className="px-4 py-3 border-b border-slate-100 dark:border-[#222249] flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Bell className="size-4 text-emerald-500" />
@@ -778,7 +871,7 @@ const AppContent: React.FC = () => {
             </div>
           </div>
         </header>
-        <main className="flex-1 overflow-y-auto px-10 pb-10">
+        <main className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-10 pb-6 lg:pb-10">
           <ErrorBoundary>{renderContent()}</ErrorBoundary>
         </main>
       </div>
